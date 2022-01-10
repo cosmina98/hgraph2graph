@@ -29,12 +29,9 @@ class _IterGenBase(HierVAE):
         self.vocab = model_prms.vocab
         self.atom_vocab = model_prms.atom_vocab
         self.batch_size = batch_size
-        self.step = 0 
+        self.step = 0
         self.max_step = steps
-        # Initial batch is randomly sampled
-        self.z_vecs = self.rand_sample()
-        self.cur_batch = self.decode_smiles(self.z_vecs)
-
+        
     def rand_sample(self):
         return torch.randn(self.batch_size, self.latent_size).cuda()
 
@@ -45,6 +42,13 @@ class _IterGenBase(HierVAE):
 
     def encode_smiles(self, smiles_list, perturb=False):
         # No purterbation on latent vector for the default behavior
+        failed_smiles = []
+        tree_batch = []
+        for s in smiles_list:
+            try:
+                tree_batch.append(MolGraph(s))
+            except AssertionError:
+                failed_smiles.append(s)
         _, tensorized, _ = MolGraph.tensorize(smiles_list, self.vocab, self.atom_vocab)
         tree_tensors, graph_tensors = make_cuda(tensorized)
         root_vecs, tree_vecs, _, graph_vecs = self.encoder(tree_tensors, graph_tensors)
@@ -58,7 +62,13 @@ class _IterGenBase(HierVAE):
     def generate_new_vecs(self):
         raise NotImplementedError
 
+    # def filter_select(self, smiles_list, measure_filter):
+    #     return filter(measure_filter, smiles_list)
+
     def __iter__(self):
+        # Initial batch is randomly sampled
+        self.z_vecs = self.rand_sample()
+        self.cur_batch = self.decode_smiles(self.z_vecs)
         return self
 
     def __next__(self):
@@ -104,36 +114,71 @@ class IterGenConvert(_IterGenBase):
         """
         self.z_vecs=self.encode_smiles(self.cur_batch, perturb=True)
 
+# class BatchEncoder():
+#     def __init__(self, smiles_list, batch_size, model_prms):
+#         super().__init__(model_prms)
+#         self.cuda()
+#         self.load_state_dict(torch.load(model_prms.model_loc)[0])
+#         self.eval()
+        
+#         self.vocab = model_prms.vocab
+#         self.atom_vocab = model_prms.atom_vocab
+
+#         size = len(smiles_list)
+#         idx = list(range(0,size,batch_size))
+#         idx.append(size)
+#         self.batches = list(zip(idx[0:-1],idx[1:]))
+
+
+#     def __iter__(self):
+#         return self
+
+#     def __next__(self):
+#         if self.step < self.max_step:
+#             self.generate_new_vecs()
+#             self.cur_batch = self.decode_smiles(self.z_vecs)
+#             self.step += 1
+#             return self.cur_batch
+#         else:
+#             raise StopIteration
+
+
 if __name__=='__main__':
     # Stock ChEMBL model
     model_loc = "./ckpt/chembl-pretrained/model.ckpt" 
     vocab_loc = './data/chembl/vocab.txt'
     batch_size = 10
-    steps = 20
+    steps = 5
+    # n_samples = 10
     torch.manual_seed(42)
     eta = 1
     prms = StockParamLoader(model_loc, vocab_loc)
+    
+    with torch.no_grad():
+        batch_generator = IterGenRand(batch_size, steps, prms, eta)
+        for batch in batch_generator:
+            print("Step", batch_generator.step)
+            print("Total SMILES:", len(batch))
+            for i, smi in enumerate(batch):
+                print(i, smi)
+            print('***'*10)
+        torch.cuda.empty_cache()
 
-    batch_generator = IterGenRand(batch_size, steps, prms, eta)
-    for batch in batch_generator:
-        print("Step", batch_generator.step)
-        print("Total SMILES:", len(batch))
-        for i, smi in enumerate(batch):
-            print(i, smi)
-        print('***'*10)
+        batch_generator = IterGenDirect(batch_size, steps, prms, eta)
+        for batch in batch_generator:
+            print("Step", batch_generator.step)
+            print("Total SMILES:", len(batch))
+            for i, smi in enumerate(batch):
+                print(i, smi)
+            print('***'*10)
+        torch.cuda.empty_cache()
 
-    batch_generator = IterGenDirect(batch_size, steps, prms, eta)
-    for batch in batch_generator:
-        print("Step", batch_generator.step)
-        print("Total SMILES:", len(batch))
-        for i, smi in enumerate(batch):
-            print(i, smi)
-        print('***'*10)
-
-    batch_generator = IterGenConvert(batch_size, steps, prms, eta)
-    for batch in batch_generator:
-        print("Step", batch_generator.step)
-        print("Total SMILES:", len(batch))
-        for i, smi in enumerate(batch):
-            print(i, smi)
-        print('***'*10)
+        batch_generator = IterGenConvert(batch_size, steps, prms, eta)
+        for batch in batch_generator:
+            print("Step", batch_generator.step)
+            print("Total SMILES:", len(batch))
+            for i, smi in enumerate(batch):
+                print(i, smi)
+            print('***'*10)
+        torch.cuda.empty_cache()
+    
