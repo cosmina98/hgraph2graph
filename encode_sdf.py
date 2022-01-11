@@ -2,20 +2,9 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 import numpy as np
 import torch
-from iter_gen import IterGenDirect, StockParamLoader
-from hgraph import MolGraph
-
-def in_vocab(smiles, vocab, avocab):
-    mg = MolGraph(smiles)
-    for idx, pair in mg.mol_tree.nodes(data='label'):
-        # pair consists of two types SMILES of the same mol: (unmapped, root_mapped)
-        if pair not in vocab.vmap:
-            return False
-    for idx, element_symbol in mg.mol_graph.nodes(data='label'):
-        if element_symbol not in avocab.vmap:
-            return False
-
-    return True
+from iter_gen import IterGenDirect, StockParamLoader, VAEInterface, SmilesBatchTensorizor
+from hgraph.hgnn import make_cuda
+from tqdm import tqdm
 
 if __name__ == '__main__':
     import argparse
@@ -48,14 +37,10 @@ if __name__ == '__main__':
 
     model_loc = "./ckpt/chembl-pretrained/model.ckpt" 
     vocab_loc = './data/chembl/vocab.txt'
-    batch_size = 500
-    steps = 5
-    # n_samples = 10
     torch.manual_seed(42)
-    eta = 1
     prms = StockParamLoader(model_loc, vocab_loc)
     
-    batch_generator = IterGenDirect(batch_size, steps, prms, eta)
+    vae = VAEInterface(prms)
 
     size = len(smiles)
     step = 100
@@ -64,25 +49,32 @@ if __name__ == '__main__':
     batches = list(zip(idx[0:-1],idx[1:]))
 
     z_vecs = []
-    all_cleaned = []
+    all_failed = []
 
-    for start, stop in batches:
-        print(start, stop)
-        cleaned = list(filter(lambda smi: in_vocab(smi, batch_generator.vocab, batch_generator.atom_vocab), smiles[start:stop]))
-        all_cleaned.extend(cleaned)
+    for start, stop in tqdm(batches):
 
         with torch.no_grad():
-            cur_z_vecs = batch_generator.encode_smiles(cleaned)
+            tensorizor = SmilesBatchTensorizor(smiles[start:stop],vae.vocab,vae.atom_vocab)
+            failed = tensorizor.vocab_clean()
+            if failed:
+                all_failed.extend(failed)
+                print('{} SMILES omitted due to no matching vocab'.format(len(failed)))
+                for f in failed: print(f)
+            _, tensorized, _ = tensorizor.make_tensors()
+            tree_tensors, graph_tensors = make_cuda(tensorized)
+            cur_z_vecs = vae.encode_tensorized(tree_tensors, graph_tensors, perturb=False)
+
         z_vecs.append(cur_z_vecs.to('cpu'))
         torch.cuda.empty_cache()
     final_z_vecs = torch.cat(z_vecs)
     print("Vectors of shape {} generated".format(final_z_vecs.shape))
+    print('Total of {} SMILES omitted'.format(len(all_failed)))
 
     np.save(npy_file, final_z_vecs.numpy())
 
-    with npy_file.with_suffix('.smi').open('w') as f:
-        for smi in all_cleaned:
-            f.write(smi+'\n')
+    # with npy_file.with_suffix('.smi').open('w') as f:
+    #     for smi in all_cleaned:
+    #         f.write(smi+'\n')
 
     print("Vectors saved at {}".format(npy_file))
 
