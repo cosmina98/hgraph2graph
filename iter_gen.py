@@ -1,6 +1,8 @@
+import numpy as np
 from hgraph import HierVAE, common_atom_vocab, PairVocab, MolGraph
 from hgraph.hgnn import make_cuda
 import torch
+import time
 
 conditional_add = lambda x,y : x + y if type(x) is int \
     else (x[0] + y, x[1] + y)
@@ -157,25 +159,23 @@ class VAEInterface(HierVAE):
         # FIXME: decode could fail due to index error 
         # in inc_graph.py line 130
         # seed = 42 and max_decode = 150 to reproduce this error
-        return self.decoder.decode(
-            z_vecs_3, greedy=True, max_decode_step=100
+        try:
+            return self.decoder.decode(
+                z_vecs_3, greedy=True, max_decode_step=100
             )
+        except IndexError:
+            print('Failed to decode')
+            print('Use Random generated vecs instead')
+            new_z_vecs = torch.randn(z_vecs.shape[0], self.latent_size).cuda()
+            return self.decode_smiles(new_z_vecs)
 
-
-class _IterGenBase(VAEInterface):
-    def __init__(self, batch_size, steps, model_prms, 
+class VAEGenerator(VAEInterface):
+    def __init__(self, model_prms, 
                  oracle, sort_descending = True):
         super().__init__(model_prms)
-        
-        self.batch_size = batch_size
-        self.step = 0
-        self.max_step = steps
-        self.n_samples = 10
+
         self.oracle = oracle
         self.sort_descending = sort_descending
-        
-    def rand_sample_vecs(self):
-        return torch.randn(self.batch_size, self.latent_size).cuda()
 
     def perturb_latent(self, z_vecs, eta):
         z_log_var = -torch.abs( torch.log(z_vecs.var(0)) )
@@ -211,11 +211,14 @@ class _IterGenBase(VAEInterface):
         Pick the best SMILES according to the oracle scores, 
         return the index and the best SMILES
         """
+        
         scores = [(oracle(smiles), i, smiles) \
             for i, smiles in enumerate(smiles_list) if smiles]
         # scores: (oracle_score, index, smiles)
         scores.sort(reverse = descending)
-        return scores[0][1:]
+        # for x in scores:
+        #     print(x)
+        return scores[0]
 
     def generate_new_vecs(self):
         raise NotImplementedError
@@ -230,11 +233,11 @@ class _IterGenBase(VAEInterface):
         #     for i, smi in enumerate(smi_list):
         #         print(i, smi)
 
-        ids, selected_smiles = \
+        selected_scores, ids, selected_smiles = \
             zip(*(self.pick_best_sample(smi_list, oracle, descending) \
             for smi_list in candidate_smiles))
-
-        ids = torch.IntTensor(ids).cuda()
+        
+        ids = torch.LongTensor(ids).cuda()
         # reshape indices into (batch_size, 1, latent_size) 
         # for gather the best latent vectors from candidates from dim 1
         ids = ids.unsqueeze(-1).repeat(1,candidate_vecs.shape[-1]).unsqueeze(1)
@@ -242,66 +245,99 @@ class _IterGenBase(VAEInterface):
         # (batch_size, latent_size)
         selected_vecs = candidate_vecs.gather(1,ids).squeeze(1)
 
-        return selected_vecs, selected_smiles
+        return np.array(selected_scores), selected_vecs, selected_smiles
 
-    def __iter__(self):
+
+class IterGen(VAEGenerator):
+    def __init__(self, batch_size, steps, n_samples ,prms, eta, oracle,
+                 gen_mode, acc_rate = 0.01, save_path = None):
+        super().__init__(prms,oracle,sort_descending=True) 
+        self.n_samples = n_samples
+        self.eta = eta
+        self.acc_rate = acc_rate
+        self.all_smiles = []
+        self.all_scores = []
+        self.batch_size = batch_size
+        self.step = 0
+        self.max_step = steps
+        self.save_path = save_path
+        if self.save_path is not None:
+            with open(self.save_path,'w') as f:
+                f.write('STEP,SCORE,SMILES\n')
         # Initial batch is randomly sampled
         self.z_vecs = self.rand_sample_vecs()
         self.cur_batch = self.decode_smiles(self.z_vecs)
-        return self
+        self.cur_scores = np.zeros(batch_size)
+        self.assign_gen_mode(gen_mode)
 
-    def __next__(self):
-        if self.step < self.max_step:
-            self.generate_new_vecs()
-            self.z_vecs, self.cur_batch = self.generate_new_smiles(
-                self.z_vecs, self.n_samples, 
-                self.oracle, self.sort_descending
-                )
-            self.step += 1
-            torch.cuda.empty_cache()
-            return self.cur_batch
-        else:
-            raise StopIteration
+    def rand_sample_vecs(self):
+        return torch.randn(self.batch_size, self.latent_size).cuda()
 
-
-class IterGenRand(_IterGenBase):
-    def __init__(self, batch_size, steps, prms, eta, oracle):
-        super().__init__(batch_size, steps, prms, oracle)
-
-    def generate_new_vecs(self):
-        """
-        Randomly sample the latent space
-        """
-        self.z_vecs = self.rand_sample_vecs()
-
-
-class IterGenDirect(_IterGenBase):
-    def __init__(self, batch_size, steps, prms, eta, oracle):
-        super().__init__(batch_size, steps, prms, oracle)
-        # multiplication factor of latent vector perturbation
-        self.eta = eta
-
-    def generate_new_vecs(self):
-        """
-        Generation is anchored on current z_vecs.
-        Directly perturb the current latent vectors 
-        without encoding from SMILES.
-        """
-        self.z_vecs = self.perturb_latent(self.z_vecs, self.eta)
-
-
-class IterGenConvert(_IterGenBase):
-    def __init__(self, batch_size, steps, prms, eta, oracle):
-        super().__init__(batch_size, steps, prms, oracle)
-
-    def generate_new_vecs(self):
+    def convert_sample_vecs(self):
         """
         Generation is anchored on current SMILES batch
         Encode the current batch of SMILES 
         and perturb the latent vectors
         """
-        self.z_vecs=self.encode_smiles(self.cur_batch, perturb=True)
+        return self.encode_smiles(self.cur_batch, perturb=True)
 
+    def direct_sample_vecs(self):
+        """
+        Generation is anchored on current z_vecs.
+        Directly perturb the current latent vectors 
+        without encoding from SMILES.
+        """
+        return self.perturb_latent(self.z_vecs, self.eta)
+
+    def assign_gen_mode(self, gen_mode):
+        allowed_mode = {
+            'rand' : self.rand_sample_vecs,
+            'direct' : self.direct_sample_vecs,
+            'convert' : self.convert_sample_vecs
+            }
+        if gen_mode not in allowed_mode.keys():
+            print('Invalid Generation Mode! Selection has to be from',
+                  allowed_mode.keys())
+        else:
+            self.generate_new_vecs = allowed_mode[gen_mode]
+
+    def accept_new(self, new_scores, new_smiles, rate = 0.05):
+        accepted = np.logical_or(
+            new_scores > self.cur_scores,
+            rate > np.random.rand(self.batch_size)
+            )
+        acc_smiles = list(np.where(accepted, new_smiles, self.cur_batch))
+        acc_scores = np.where(accepted, new_scores, self.cur_scores)
+        return acc_scores, acc_smiles
+            
+    def flush_file(self, scores, smiles):
+        with open(self.save_path, 'a') as f:
+            for score, smi in zip(scores,smiles):
+                f.write("{},{},{}\n"\
+                    .format(str(self.step),str(score),smi))
+
+    def __iter__(self):
+       return self
+
+    def __next__(self):
+        if self.step < self.max_step:
+            seeding_z_vecs = self.generate_new_vecs()
+            new_scores, self.z_vecs, new_smiles = \
+                self.generate_new_smiles(
+                    seeding_z_vecs, self.n_samples, 
+                    self.oracle, self.sort_descending
+                )
+            self.cur_scores, self.cur_batch = \
+                self.accept_new(new_scores, new_smiles, rate = 0.05) 
+
+            self.step += 1
+            if self.save_path is not None:
+                self.flush_file(list(self.cur_scores), self.cur_batch)
+
+            torch.cuda.empty_cache()
+            return list(self.cur_scores), self.cur_batch
+        else:
+            raise StopIteration
 
 # class BatchEncoder:
 #     def __init__(self, smiles_list, batch_size, model_prms):
@@ -335,7 +371,7 @@ if __name__=='__main__':
     # Stock ChEMBL model
     model_loc = "./ckpt/chembl-pretrained/model.ckpt" 
     vocab_loc = './data/chembl/vocab.txt'
-    batch_size = 10
+    batch_size = 100
     steps = 5
     # n_samples = 10
     torch.manual_seed(42)
@@ -355,8 +391,24 @@ if __name__=='__main__':
         print("Vecs shape:", vecs.shape)
         torch.cuda.empty_cache()
 
-        batch_generator = IterGenRand(
-            batch_size, steps, prms, eta, test_oracle
+        start_time = time.time()
+        batch_generator = IterGen(
+            batch_size, steps, prms, eta, test_oracle,
+            'rand'
+            )
+        for batch in batch_generator:
+            print("Step", batch_generator.step)
+            print("Total SMILES:", len(batch))
+            for i, smi in enumerate(batch):
+                print(i, smi)
+            print('***'*10)
+        print('Time Used:', time.time()-start_time)
+
+        
+        start_time = time.time()
+        batch_generator = IterGen(
+            batch_size, steps, prms, eta, test_oracle,
+            'direct'
             )
         for batch in batch_generator:
             print("Step", batch_generator.step)
@@ -365,18 +417,12 @@ if __name__=='__main__':
                 print(i, smi)
             print('***'*10)
 
-        batch_generator = IterGenDirect(
-            batch_size, steps, prms, eta, test_oracle
-            )
-        for batch in batch_generator:
-            print("Step", batch_generator.step)
-            print("Total SMILES:", len(batch))
-            for i, smi in enumerate(batch):
-                print(i, smi)
-            print('***'*10)
+        print('Time Used:', time.time()-start_time)
 
-        batch_generator = IterGenConvert(
-            batch_size, steps, prms, eta, test_oracle
+        start_time = time.time()
+        batch_generator = IterGen(
+            batch_size, steps, prms, eta, test_oracle,
+            'convert'
             )
         for batch in batch_generator:
             print("Step", batch_generator.step)
@@ -384,3 +430,5 @@ if __name__=='__main__':
             for i, smi in enumerate(batch):
                 print(i, smi)
             print('***'*10)
+        
+        print('Time Used:', time.time()-start_time)
