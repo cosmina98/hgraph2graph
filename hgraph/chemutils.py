@@ -108,6 +108,8 @@ def copy_edit_mol(mol):
     return new_mol
 
 def get_clique_mol(mol, atoms):
+    for atom in atoms:
+      mol.GetAtomWithIdx(atom).SetNumExplicitHs(4)
     smiles = Chem.MolFragmentToSmiles(mol, atoms, kekuleSmiles=True)
     new_mol = Chem.MolFromSmiles(smiles, sanitize=False)
     new_mol = copy_edit_mol(new_mol).GetMol()

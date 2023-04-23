@@ -33,10 +33,10 @@ class PairVocab(object):
         for h,s in smiles_pairs:
             hid = self.hmap[h]
             idx = self.vmap[(h,s)]
-            self.mask[hid, idx] = 1000.0
+            self.mask[hid, idx] = 10.0
 
         if cuda: self.mask = self.mask.cuda()
-        self.mask = self.mask - 1000.0
+        self.mask = self.mask - 10.0
             
     def __getitem__(self, x):
         assert type(x) is tuple
