@@ -8,13 +8,15 @@ def process(data):
     vocab = set()
     for line in data:
         s = line.strip("\r\n ")
-        hmol = MolGraph(s)
-        for node,attr in hmol.mol_tree.nodes(data=True):
-            smiles = attr['smiles']
-            vocab.add( attr['label'] )
-            for i,s in attr['inter_label']:
-                vocab.add( (smiles, s) )
-    return vocab
+        try:
+            hmol = MolGraph(s)
+            for node,attr in hmol.mol_tree.nodes(data=True):
+                smiles = attr['smiles']
+                vocab.add( attr['label'] )
+                for i,s in attr['inter_label']:
+                    vocab.add( (smiles, s) )
+            return vocab
+        except: continue
 
 if __name__ == "__main__":
 
