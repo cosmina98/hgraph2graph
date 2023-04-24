@@ -88,12 +88,12 @@ for epoch in range(args.epoch):
         total_step += 1
         model.zero_grad()
         loss, kl_div, wacc, iacc, tacc, sacc = model(*batch, beta=beta)
-
+        print(loss.cpu().detach().numpy().item(), kl_div, wacc.cpu().detach().numpy(), iacc.cpu().detach().numpy(), tacc.cpu().detach().numpy(), sacc.cpu().detach().numpy())
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
         optimizer.step()
 
-        meters = meters + np.array([kl_div, loss.item(), wacc * 100, iacc * 100, tacc * 100, sacc * 100])
+        meters = meters + np.array([kl_div, loss.cpu().detach().numpy(), wacc.cpu().detach().numpy() * 100, iacc.cpu().detach().numpy() * 100, tacc.cpu().detach().numpy() * 100, sacc.cpu().detach().numpy() * 100])
 
         if total_step % args.print_iter == 0:
             meters /= args.print_iter
