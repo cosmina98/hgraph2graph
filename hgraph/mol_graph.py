@@ -149,12 +149,17 @@ class MolGraph(object):
     
     @staticmethod
     def tensorize(mol_batch, vocab, avocab):
-        mol_batch = [MolGraph(x) for x in mol_batch]
+        new_batch=[]
+        for x in mol_batch:
+          try: new_batch.append(MolGraph(x))
+          except: continue
+        mol_batch = new_batch
+
         tree_tensors, tree_batchG = MolGraph.tensorize_graph([x.mol_tree for x in mol_batch], vocab)
         graph_tensors, graph_batchG = MolGraph.tensorize_graph([x.mol_graph for x in mol_batch], avocab)
         tree_scope = tree_tensors[-1]
         graph_scope = graph_tensors[-1]
-
+        
         max_cls_size = max( [len(c) for x in mol_batch for c in x.clusters] )
         cgraph = torch.zeros(len(tree_batchG) + 1, max_cls_size).int()
         for v,attr in tree_batchG.nodes(data=True):

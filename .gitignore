@@ -7,3 +7,5 @@ model.*
 splits/
 *.pkl
 ckpt/
+test.ipynb
+data/chembl/all.txt

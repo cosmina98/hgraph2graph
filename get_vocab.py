@@ -15,8 +15,9 @@ def process(data):
                 vocab.add( attr['label'] )
                 for i,s in attr['inter_label']:
                     vocab.add( (smiles, s) )
-            return vocab
         except: continue
+    return vocab
+
 
 if __name__ == "__main__":
 
