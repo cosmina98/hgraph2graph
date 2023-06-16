@@ -50,6 +50,8 @@ random.seed(args.seed)
 with torch.no_grad():
     for _ in tqdm(range(args.nsample // args.batch_size)):
         smiles_list = model.sample(args.batch_size, greedy=True)
-        for _,smiles in enumerate(smiles_list):
-            print(smiles)
+        with open(f'generated.txt'.replace('_train1', ''),'w') as file:
+          for _,smiles in enumerate(smiles_list):
+            #print(smiles)
+            file.write(smiles+'\n')
 
