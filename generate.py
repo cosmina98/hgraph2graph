@@ -19,6 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--vocab', required=True)
 parser.add_argument('--atom_vocab', default=common_atom_vocab)
 parser.add_argument('--model', required=True)
+parser.add_argument('--name', required=True)
 
 parser.add_argument('--seed', type=int, default=7)
 parser.add_argument('--nsample', type=int, default=10000)
@@ -50,7 +51,7 @@ random.seed(args.seed)
 with torch.no_grad():
     for _ in tqdm(range(args.nsample // args.batch_size)):
         smiles_list = model.sample(args.batch_size, greedy=True)
-        with open(f'generated.txt'.replace('_train1', ''),'w') as file:
+        with open(f'{args.name}.txt','w' ) as file:
           for _,smiles in enumerate(smiles_list):
             #print(smiles)
             file.write(smiles+'\n')
